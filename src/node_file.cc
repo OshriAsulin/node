@@ -264,17 +264,17 @@ FileHandle* FileHandle::New(BindingData* binding_data,
 }
 
 void FileHandle::New(const FunctionCallbackInfo<Value>& args) {
-  BindingData* binding_data = Realm::GetBindingData<BindingData>(args);
-  Environment* env = binding_data->env();
   CHECK(args.IsConstructCall());
   CHECK(args[0]->IsInt32());
+  Realm* realm = Realm::GetCurrent(args);
+  BindingData* binding_data = realm->GetBindingData<BindingData>();
 
   std::optional<int64_t> maybeOffset = std::nullopt;
   std::optional<int64_t> maybeLength = std::nullopt;
   if (args[1]->IsNumber())
-    maybeOffset = args[1]->IntegerValue(env->context()).FromJust();
+    maybeOffset = args[1]->IntegerValue(realm->context()).FromJust();
   if (args[2]->IsNumber())
-    maybeLength = args[2]->IntegerValue(env->context()).FromJust();
+    maybeLength = args[2]->IntegerValue(realm->context()).FromJust();
 
   FileHandle::New(binding_data,
                   args[0].As<Int32>()->Value(),
@@ -456,7 +456,7 @@ MaybeLocal<Promise> FileHandle::ClosePromise() {
   Local<Context> context = env()->context();
 
   Local<Value> close_resolver =
-      object()->GetInternalField(FileHandle::kClosingPromiseSlot);
+      object()->GetInternalField(FileHandle::kClosingPromiseSlot).As<Value>();
   if (!close_resolver.IsEmpty() && !close_resolver->IsUndefined()) {
     CHECK(close_resolver->IsPromise());
     return close_resolver.As<Promise>();
@@ -1108,13 +1108,14 @@ static void InternalModuleStat(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void Stat(const FunctionCallbackInfo<Value>& args) {
-  BindingData* binding_data = Realm::GetBindingData<BindingData>(args);
-  Environment* env = binding_data->env();
+  Realm* realm = Realm::GetCurrent(args);
+  BindingData* binding_data = realm->GetBindingData<BindingData>();
+  Environment* env = realm->env();
 
   const int argc = args.Length();
   CHECK_GE(argc, 2);
 
-  BufferValue path(env->isolate(), args[0]);
+  BufferValue path(realm->isolate(), args[0]);
   CHECK_NOT_NULL(*path);
   THROW_IF_INSUFFICIENT_PERMISSIONS(
       env, permission::PermissionScope::kFileSystemRead, path.ToStringView());
@@ -1143,13 +1144,14 @@ static void Stat(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void LStat(const FunctionCallbackInfo<Value>& args) {
-  BindingData* binding_data = Realm::GetBindingData<BindingData>(args);
-  Environment* env = binding_data->env();
+  Realm* realm = Realm::GetCurrent(args);
+  BindingData* binding_data = realm->GetBindingData<BindingData>();
+  Environment* env = realm->env();
 
   const int argc = args.Length();
   CHECK_GE(argc, 3);
 
-  BufferValue path(env->isolate(), args[0]);
+  BufferValue path(realm->isolate(), args[0]);
   CHECK_NOT_NULL(*path);
 
   bool use_bigint = args[1]->IsTrue();
@@ -1177,8 +1179,9 @@ static void LStat(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void FStat(const FunctionCallbackInfo<Value>& args) {
-  BindingData* binding_data = Realm::GetBindingData<BindingData>(args);
-  Environment* env = binding_data->env();
+  Realm* realm = Realm::GetCurrent(args);
+  BindingData* binding_data = realm->GetBindingData<BindingData>();
+  Environment* env = realm->env();
 
   const int argc = args.Length();
   CHECK_GE(argc, 2);
@@ -1209,14 +1212,17 @@ static void FStat(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void StatFs(const FunctionCallbackInfo<Value>& args) {
-  BindingData* binding_data = Realm::GetBindingData<BindingData>(args);
-  Environment* env = binding_data->env();
+  Realm* realm = Realm::GetCurrent(args);
+  BindingData* binding_data = realm->GetBindingData<BindingData>();
+  Environment* env = realm->env();
 
   const int argc = args.Length();
   CHECK_GE(argc, 2);
 
-  BufferValue path(env->isolate(), args[0]);
+  BufferValue path(realm->isolate(), args[0]);
   CHECK_NOT_NULL(*path);
+  THROW_IF_INSUFFICIENT_PERMISSIONS(
+      env, permission::PermissionScope::kFileSystemRead, path.ToStringView());
 
   bool use_bigint = args[1]->IsTrue();
   FSReqBase* req_wrap_async = GetReqWrap(args, 2, use_bigint);
@@ -2064,14 +2070,14 @@ static void Open(const FunctionCallbackInfo<Value>& args) {
 }
 
 static void OpenFileHandle(const FunctionCallbackInfo<Value>& args) {
-  BindingData* binding_data = Realm::GetBindingData<BindingData>(args);
-  Environment* env = binding_data->env();
-  Isolate* isolate = env->isolate();
+  Realm* realm = Realm::GetCurrent(args);
+  BindingData* binding_data = realm->GetBindingData<BindingData>();
+  Environment* env = realm->env();
 
   const int argc = args.Length();
   CHECK_GE(argc, 3);
 
-  BufferValue path(isolate, args[0]);
+  BufferValue path(realm->isolate(), args[0]);
   CHECK_NOT_NULL(*path);
 
   CHECK(args[1]->IsInt32());
@@ -3042,10 +3048,11 @@ void BindingData::LegacyMainResolve(const FunctionCallbackInfo<Value>& args) {
     return;
   }
 
-  std::string err_module_message =
-      "Cannot find package '" + module_path + "' imported from " + module_base;
   env->isolate()->ThrowException(
-      ERR_MODULE_NOT_FOUND(env->isolate(), err_module_message.c_str()));
+      ERR_MODULE_NOT_FOUND(env->isolate(),
+                           "Cannot find package '%s' imported from %s",
+                           module_path,
+                           module_base));
 }
 
 void BindingData::MemoryInfo(MemoryTracker* tracker) const {
@@ -3113,7 +3120,7 @@ void BindingData::Deserialize(Local<Context> context,
                               Local<Object> holder,
                               int index,
                               InternalFieldInfoBase* info) {
-  DCHECK_EQ(index, BaseObject::kEmbedderType);
+  DCHECK_IS_SNAPSHOT_SLOT(index);
   HandleScope scope(context->GetIsolate());
   Realm* realm = Realm::GetCurrent(context);
   InternalFieldInfo* casted_info = static_cast<InternalFieldInfo*>(info);
@@ -3141,7 +3148,7 @@ bool BindingData::PrepareForSerialization(Local<Context> context,
 }
 
 InternalFieldInfoBase* BindingData::Serialize(int index) {
-  DCHECK_EQ(index, BaseObject::kEmbedderType);
+  DCHECK_IS_SNAPSHOT_SLOT(index);
   InternalFieldInfo* info = internal_field_info_;
   internal_field_info_ = nullptr;
   return info;
